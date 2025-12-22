@@ -1,0 +1,22 @@
+{
+  "name": "image-extractor",
+  "version": "1.0.0",
+  "description": "Extract and identify company logos from websites using Playwright",
+  "main": "imageExtractor.js",
+  "type": "module",
+  "scripts": {
+    "start": "node imageExtractor.js",
+    "extract-images": "node imageExtractor.js"
+  },
+  "keywords": [
+    "playwright",
+    "scraping",
+    "logo",
+    "image-extraction"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "playwright": "^1.57.0"
+  }
+}
