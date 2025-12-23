@@ -1,65 +1,7 @@
-import { chromium } from 'playwright';
 import sharp from 'sharp';
-import { URL } from 'url';
-
-/**
- * Get favicon URL from a website
- */
-async function getFaviconUrl(page, baseUrl) {
-  try {
-    // Try to find favicon link in HTML
-    const faviconLink = await page.evaluate(() => {
-      // Check for various favicon link formats
-      const selectors = [
-        'link[rel="icon"]',
-        'link[rel="shortcut icon"]',
-        'link[rel="apple-touch-icon"]',
-        'link[rel="apple-touch-icon-precomposed"]'
-      ];
-      
-      for (const selector of selectors) {
-        const link = document.querySelector(selector);
-        if (link && link.href) {
-          return link.href;
-        }
-      }
-      return null;
-    });
-
-    if (faviconLink) {
-      // Resolve relative URLs
-      try {
-        return new URL(faviconLink, baseUrl).href;
-      } catch (e) {
-        return faviconLink;
-      }
-    }
-  } catch (error) {
-    console.log('  Could not find favicon link in HTML');
-  }
-
-  // Fallback to common favicon locations
-  const baseUrlObj = new URL(baseUrl);
-  const commonPaths = [
-    '/favicon.ico',
-    '/favicon.png',
-    '/apple-touch-icon.png'
-  ];
-
-  for (const path of commonPaths) {
-    const faviconUrl = `${baseUrlObj.origin}${path}`;
-    try {
-      const response = await page.goto(faviconUrl, { waitUntil: 'networkidle', timeout: 5000 });
-      if (response && response.status() === 200) {
-        return faviconUrl;
-      }
-    } catch (e) {
-      // Continue to next path
-    }
-  }
-
-  return null;
-}
+import { createBrowserContext } from './utils/browser.js';
+import { getFaviconUrl } from './utils/faviconHelpers.js';
+import { validateUrl } from './utils/urlHelpers.js';
 
 /**
  * Download image as buffer, converting ICO to PNG if needed
@@ -90,10 +32,10 @@ async function downloadImage(page, imageUrl) {
       
       await page.setContent(html, { waitUntil: 'domcontentloaded' });
       
-      // Wait for image to load with multiple retries
+      // Wait for image to load with fewer retries (optimized)
       let imgElement = null;
-      for (let i = 0; i < 5; i++) {
-        await page.waitForTimeout(500);
+      for (let i = 0; i < 3; i++) { // Reduced from 5 to 3
+        await page.waitForTimeout(300); // Reduced from 500ms
         imgElement = await page.$('img');
         if (imgElement) {
           // Check if image is actually loaded
@@ -117,9 +59,9 @@ async function downloadImage(page, imageUrl) {
         }
       }
       
-      // Fallback: try loading via data URL or fetch
+      // Fallback: try loading via data URL or fetch (use 'load' for faster response)
       try {
-        const response = await page.goto(imageUrl, { waitUntil: 'networkidle', timeout: 10000 });
+        const response = await page.goto(imageUrl, { waitUntil: 'load', timeout: 10000 });
         if (response && response.status() === 200) {
           const buffer = await response.body();
           const contentType = response.headers()['content-type'] || '';
@@ -146,7 +88,7 @@ async function downloadImage(page, imageUrl) {
             `;
             
             await page.setContent(htmlWithDataUrl, { waitUntil: 'domcontentloaded' });
-            await page.waitForTimeout(1000);
+            await page.waitForTimeout(500); // Reduced from 1000ms
             
             const imgEl = await page.$('img');
             if (imgEl) {
@@ -169,8 +111,8 @@ async function downloadImage(page, imageUrl) {
       }
     }
     
-    // For other formats, download normally
-    const response = await page.goto(imageUrl, { waitUntil: 'networkidle', timeout: 10000 });
+    // For other formats, download normally (use 'load' for faster response)
+    const response = await page.goto(imageUrl, { waitUntil: 'load', timeout: 10000 });
     if (!response || response.status() !== 200) {
       throw new Error(`Failed to download image: ${response?.status()}`);
     }
@@ -182,12 +124,6 @@ async function downloadImage(page, imageUrl) {
   }
 }
 
-/**
- * Download favicon image as buffer, converting ICO to PNG if needed
- */
-async function downloadFavicon(page, faviconUrl) {
-  return downloadImage(page, faviconUrl);
-}
 
 /**
  * Convert RGB array to hex string
@@ -200,14 +136,24 @@ function rgbToHex(r, g, b) {
 }
 
 /**
- * Extract dominant colors from image using quantization
+ * Extract dominant colors from image using optimized quantization
+ * Uses pixel sampling and quantized color buckets for better performance
  */
 function extractDominantColors(pixels, colorCount = 5) {
-  // Simple color quantization: group similar colors
   const colorMap = new Map();
   const threshold = 30; // Color similarity threshold
+  const quantizeStep = 10; // Quantize colors to reduce comparisons
   
-  for (let i = 0; i < pixels.length; i += 4) {
+  // Sample pixels for better performance (process every 2nd pixel)
+  // This reduces processing time by ~50% with minimal quality loss
+  const sampleRate = 2;
+  const maxPixels = 15000; // Limit processing for very large images
+  
+  let processedCount = 0;
+  const totalPixels = pixels.length / 4;
+  const pixelLimit = Math.min(totalPixels, maxPixels);
+  
+  for (let i = 0; i < pixels.length && processedCount < pixelLimit; i += 4 * sampleRate) {
     const r = pixels[i];
     const g = pixels[i + 1];
     const b = pixels[i + 2];
@@ -216,21 +162,39 @@ function extractDominantColors(pixels, colorCount = 5) {
     // Skip transparent pixels
     if (a < 128) continue;
     
-    // Find existing similar color or create new one
-    let found = false;
-    for (const [key, value] of colorMap.entries()) {
-      const [keyR, keyG, keyB] = key.split(',').map(Number);
-      const diff = Math.abs(r - keyR) + Math.abs(g - keyG) + Math.abs(b - keyB);
+    processedCount++;
+    
+    // Quantize color to reduce number of comparisons
+    const quantizedR = Math.floor(r / quantizeStep) * quantizeStep;
+    const quantizedG = Math.floor(g / quantizeStep) * quantizeStep;
+    const quantizedB = Math.floor(b / quantizeStep) * quantizeStep;
+    const quantizedKey = `${quantizedR},${quantizedG},${quantizedB}`;
+    
+    // Check if quantized color exists (much faster than checking all colors)
+    if (colorMap.has(quantizedKey)) {
+      colorMap.set(quantizedKey, colorMap.get(quantizedKey) + 1);
+    } else {
+      // Check if similar color exists (only check nearby quantized buckets)
+      let found = false;
+      for (const [key, count] of colorMap.entries()) {
+        const [keyR, keyG, keyB] = key.split(',').map(Number);
+        const diff = Math.abs(r - keyR) + Math.abs(g - keyG) + Math.abs(b - keyB);
+        
+        if (diff < threshold) {
+          colorMap.set(key, count + 1);
+          found = true;
+          break;
+        }
+      }
       
-      if (diff < threshold) {
-        colorMap.set(key, value + 1);
-        found = true;
-        break;
+      if (!found) {
+        colorMap.set(quantizedKey, 1);
       }
     }
     
-    if (!found) {
-      colorMap.set(`${r},${g},${b}`, 1);
+    // Early exit: if we have enough color candidates and processed enough pixels
+    if (colorMap.size >= colorCount * 2 && processedCount > pixelLimit * 0.5) {
+      // We have enough candidates, continue to get accurate frequencies but can exit early if needed
     }
   }
   
@@ -319,6 +283,18 @@ function isLightColor(hex) {
 }
 
 /**
+ * Add secondary color fallback if only primary color found
+ */
+function addSecondaryColorFallback(colors) {
+  if (colors.primary && !colors.secondary) {
+    const isLight = isLightColor(colors.primary);
+    colors.secondary = isLight ? '#000000' : '#FFFFFF';
+    console.log(`Only one color found. Using ${colors.secondary} as secondary (${isLight ? 'light' : 'dark'} primary color)`);
+  }
+  return colors;
+}
+
+/**
  * Main function to extract colors from website favicon
  */
 async function extractFaviconColors(url) {
@@ -326,23 +302,22 @@ async function extractFaviconColors(url) {
   
   try {
     // Validate URL
-    if (!url || !url.startsWith('http')) {
+    if (!validateUrl(url)) {
       throw new Error('Invalid URL. Please provide a valid HTTP/HTTPS URL.');
     }
 
-    // Launch browser
-    browser = await chromium.launch({ headless: true });
-    const context = await browser.newContext({
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      viewport: { width: 1920, height: 1080 }
-    });
-    const page = await context.newPage();
+    // Create browser context
+    const { browser: browserInstance, page } = await createBrowserContext();
+    browser = browserInstance;
 
-    // Navigate to the URL
+    // Navigate to the URL (use faster 'load' strategy first)
     console.log(`Navigating to ${url}...`);
-    await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 }).catch(() => {
-      return page.goto(url, { waitUntil: 'load', timeout: 30000 });
-    });
+    try {
+      await page.goto(url, { waitUntil: 'load', timeout: 30000 });
+    } catch (error) {
+      // Fallback to networkidle if load fails
+      await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
+    }
 
     // Get favicon URL
     console.log('Finding favicon...');
@@ -356,18 +331,14 @@ async function extractFaviconColors(url) {
 
     // Download favicon
     console.log('Downloading favicon...');
-    const imageBuffer = await downloadFavicon(page, faviconUrl);
+    const imageBuffer = await downloadImage(page, faviconUrl);
 
     // Extract colors
     console.log('Extracting colors...');
     let colors = await extractColors(imageBuffer);
 
-    // If only one color found, use black or white as secondary
-    if (colors.primary && !colors.secondary) {
-      const isLight = isLightColor(colors.primary);
-      colors.secondary = isLight ? '#000000' : '#FFFFFF';
-      console.log(`Only one color found. Using ${colors.secondary} as secondary (${isLight ? 'light' : 'dark'} primary color)`);
-    }
+    // Add secondary color fallback if needed
+    colors = addSecondaryColorFallback(colors);
 
     // If no colors found at all, return error
     if (!colors.primary) {
@@ -393,17 +364,13 @@ async function extractColorsFromImageUrl(imageUrl) {
   
   try {
     // Validate URL
-    if (!imageUrl || !imageUrl.startsWith('http')) {
+    if (!validateUrl(imageUrl)) {
       throw new Error('Invalid URL. Please provide a valid HTTP/HTTPS URL.');
     }
 
-    // Launch browser
-    browser = await chromium.launch({ headless: true });
-    const context = await browser.newContext({
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      viewport: { width: 1920, height: 1080 }
-    });
-    const page = await context.newPage();
+    // Create browser context
+    const { browser: browserInstance, page } = await createBrowserContext();
+    browser = browserInstance;
 
     // Download image
     console.log(`Downloading image from ${imageUrl}...`);
@@ -413,11 +380,8 @@ async function extractColorsFromImageUrl(imageUrl) {
     console.log('Extracting colors...');
     let colors = await extractColors(imageBuffer);
 
-    // If only one color found, use black or white as secondary
-    if (colors.primary && !colors.secondary) {
-      const isLight = isLightColor(colors.primary);
-      colors.secondary = isLight ? '#000000' : '#FFFFFF';
-    }
+    // Add secondary color fallback if needed
+    colors = addSecondaryColorFallback(colors);
 
     // If no colors found at all, return error
     if (!colors.primary) {

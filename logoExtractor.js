@@ -1,27 +1,35 @@
-import { chromium } from 'playwright';
 import { writeFileSync } from 'fs';
+import { createBrowserContext } from './utils/browser.js';
+import { getFavicon } from './utils/faviconHelpers.js';
+import { getSiteName } from './utils/siteHelpers.js';
+import { findTopLogo, prepareImagesData } from './utils/imageHelpers.js';
+import { validateUrl } from './utils/urlHelpers.js';
 
 /**
  * Navigate to a URL with fallback strategies for timeout handling
  */
 async function navigateWithFallback(page, url, options = {}) {
   const timeout = options.timeout || 30000;
-  const waitAfter = options.waitAfter || 2000;
+  const waitAfter = options.waitAfter || 500;
   
+  // Try faster strategies first (load is faster than networkidle)
   try {
-    await page.goto(url, { waitUntil: 'networkidle', timeout: timeout });
+    await page.goto(url, { waitUntil: 'load', timeout: timeout });
+    if (waitAfter > 0) {
+      await page.waitForTimeout(waitAfter);
+    }
   } catch (error) {
     try {
-      console.log('  networkidle timeout, trying load...');
-      await page.goto(url, { waitUntil: 'load', timeout: timeout });
+      console.log('  load timeout, trying domcontentloaded...');
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeout });
       if (waitAfter > 0) {
         await page.waitForTimeout(waitAfter);
       }
     } catch (error2) {
-      console.log('  load timeout, trying domcontentloaded...');
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeout });
+      console.log('  domcontentloaded timeout, trying networkidle...');
+      await page.goto(url, { waitUntil: 'networkidle', timeout: timeout });
       if (waitAfter > 0) {
-        await page.waitForTimeout(waitAfter * 2);
+        await page.waitForTimeout(waitAfter);
       }
     }
   }
@@ -34,80 +42,80 @@ async function extractAllImages(url) {
   let browser;
   
   try {
-    // Launch browser with realistic user agent to avoid bot detection
-    browser = await chromium.launch({ headless: true });
-    const context = await browser.newContext({
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      viewport: { width: 1920, height: 1080 },
-      locale: 'en-US',
-      timezoneId: 'America/New_York'
-    });
-    const page = await context.newPage();
-    
-    // Set additional headers to appear more like a real browser
-    await page.setExtraHTTPHeaders({
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-      'Accept-Language': 'en-US,en;q=0.9',
-      'Accept-Encoding': 'gzip, deflate, br',
-      'DNT': '1',
-      'Connection': 'keep-alive',
-      'Upgrade-Insecure-Requests': '1'
-    });
+    // Create browser context
+    const { browser: browserInstance, page } = await createBrowserContext();
+    browser = browserInstance;
     
     // Navigate to the URL
     console.log(`Navigating to ${url}...`);
-    await navigateWithFallback(page, url, { waitAfter: 2000 });
+    await navigateWithFallback(page, url, { waitAfter: 500 });
     
-    // Wait a bit for dynamic content to load (SPAs like Nuxt.js need more time)
-    await page.waitForTimeout(3000);
+    // Wait a bit for dynamic content to load (reduced from 3000ms to 1000ms)
+    await page.waitForTimeout(1000);
     
-    // Wait for SVG elements to be present (they might load dynamically)
-    // Try multiple times with increasing wait times for SPAs
+    // Wait for SVG elements to be present (optimized: non-blocking, fewer retries)
+    // Use Promise.race to avoid blocking if SVGs aren't present
     let svgFound = false;
-    for (let i = 0; i < 5; i++) {
-      try {
-        await page.waitForSelector('svg', { timeout: 3000 });
-        svgFound = true;
-        break;
-      } catch (e) {
-        // Wait a bit and try again
-        await page.waitForTimeout(2000);
-      }
-    }
-    
-    // Scroll the page to trigger any lazy-loaded content
-    try {
-      await page.evaluate(() => {
-        window.scrollTo(0, document.body.scrollHeight / 2);
-      });
-      await page.waitForTimeout(2000);
-      await page.evaluate(() => {
-        window.scrollTo(0, 0);
-      });
-      await page.waitForTimeout(2000);
-      
-      // Try waiting for SVG again after scrolling
-      if (!svgFound) {
+    const svgCheckPromise = (async () => {
+      for (let i = 0; i < 2; i++) { // Reduced from 5 to 2 retries
         try {
-          await page.waitForSelector('svg', { timeout: 5000 });
+          await page.waitForSelector('svg', { timeout: 1500 }); // Reduced from 3000ms
           svgFound = true;
+          return true;
         } catch (e) {
-          // Still not found
+          if (i < 1) {
+            await page.waitForTimeout(500); // Reduced from 2000ms
+          }
         }
       }
-      
-      // Wait a bit for network activity to settle
-      await page.waitForTimeout(3000);
-    } catch (e) {
-      // Ignore scroll errors
+      return false;
+    })();
+    
+    // Check if page has scrollable content before scrolling (optimization)
+    const hasScrollableContent = await page.evaluate(() => {
+      return document.body.scrollHeight > window.innerHeight;
+    });
+    
+    // Scroll the page to trigger lazy-loaded content (only if scrollable, with reduced waits)
+    if (hasScrollableContent) {
+      try {
+        await page.evaluate(() => {
+          window.scrollTo(0, document.body.scrollHeight / 2);
+        });
+        await page.waitForTimeout(500); // Reduced from 2000ms
+        await page.evaluate(() => {
+          window.scrollTo(0, 0);
+        });
+        await page.waitForTimeout(500); // Reduced from 2000ms
+        
+        // Try waiting for SVG again after scrolling (non-blocking)
+        if (!svgFound) {
+          try {
+            await Promise.race([
+              page.waitForSelector('svg', { timeout: 2000 }), // Reduced from 5000ms
+              new Promise(resolve => setTimeout(resolve, 2000))
+            ]);
+            svgFound = true;
+          } catch (e) {
+            // Still not found, continue
+          }
+        }
+      } catch (e) {
+        // Ignore scroll errors
+      }
     }
     
-    // Final wait for any remaining dynamic content
-    await page.waitForTimeout(3000);
+    // Wait for SVG check to complete (non-blocking, max 3 seconds total)
+    await Promise.race([
+      svgCheckPromise,
+      new Promise(resolve => setTimeout(resolve, 3000))
+    ]);
+    
+    // Final wait for any remaining dynamic content (reduced from 3000ms to 1000ms)
+    await page.waitForTimeout(1000);
     
     // Extract all images with metadata and scoring
     console.log('Extracting images with metadata...');
-    
     
     const images = await page.evaluate((baseUrl) => {
       const imageList = [];
@@ -963,8 +971,23 @@ async function extractAllImages(url) {
       });
       
       // 3. Get CSS background images with metadata
+      // Optimization: Only process visible elements first (early exit for better performance)
       const allElements = document.querySelectorAll('*');
+      let processedCount = 0;
+      const maxElementsToProcess = 5000; // Limit to prevent excessive processing
+      
       allElements.forEach(el => {
+        // Early exit: skip if we've processed too many elements
+        if (processedCount++ > maxElementsToProcess) {
+          return;
+        }
+        
+        // Skip hidden elements for better performance
+        const rect = el.getBoundingClientRect();
+        if (rect.width === 0 && rect.height === 0) {
+          return; // Skip invisible elements
+        }
+        
         const style = window.getComputedStyle(el);
         const bgImage = style.backgroundImage;
         
@@ -1096,13 +1119,21 @@ async function extractAllImages(url) {
       });
       
       // 4. Extract from page source/HTML for image URLs
+      // Optimization: Limit HTML parsing to prevent excessive processing
       const htmlContent = document.documentElement.outerHTML;
       
       // Match absolute image URLs
       const imageUrlPattern = /(https?:\/\/[^\s"'<>]*\.(png|jpg|jpeg|svg|webp|gif|ico|bmp|tiff)[^\s"'<>]*)/gi;
       const matches = htmlContent.matchAll(imageUrlPattern);
       
+      let htmlMatchCount = 0;
+      const maxHtmlMatches = 100; // Limit HTML source matches
+      
       for (const match of matches) {
+        // Early exit: limit HTML source matches
+        if (htmlMatchCount++ > maxHtmlMatches) {
+          break;
+        }
         if (match[1]) {
           const normalizedUrl = normalizeUrl(match[1]);
           if (!seenUrls.has(normalizedUrl)) {
@@ -1135,7 +1166,14 @@ async function extractAllImages(url) {
       const svgSpritePattern = /(?:href|xlink:href)\s*=\s*["']?([^"'\s<>]*\.svg[^"'\s<>]*)/gi;
       const spriteMatches = htmlContent.matchAll(svgSpritePattern);
       
+      let spriteMatchCount = 0;
+      const maxSpriteMatches = 50; // Limit sprite matches
+      
       for (const match of spriteMatches) {
+        // Early exit: limit sprite matches
+        if (spriteMatchCount++ > maxSpriteMatches) {
+          break;
+        }
         if (match[1]) {
           // Remove fragment identifier
           let spriteUrl = match[1].split('#')[0].trim();
@@ -1175,9 +1213,22 @@ async function extractAllImages(url) {
         }
       }
       
-      // 5. Check data attributes for image URLs
+      // 5. Check data attributes for image URLs (limited to visible elements for performance)
       const dataElements = document.querySelectorAll('*');
+      let dataProcessedCount = 0;
+      const maxDataElements = 2000; // Limit data attribute processing
+      
       dataElements.forEach(el => {
+        // Early exit: limit processing
+        if (dataProcessedCount++ > maxDataElements) {
+          return;
+        }
+        
+        // Skip hidden elements
+        const rect = el.getBoundingClientRect();
+        if (rect.width === 0 && rect.height === 0) {
+          return;
+        }
         Array.from(el.attributes).forEach(attr => {
           if (attr.name.startsWith('data-') && attr.value) {
             // Check if value contains an image URL
@@ -1309,9 +1360,7 @@ async function main() {
   }
   
   // Validate URL
-  try {
-    new URL(url);
-  } catch (e) {
+  if (!validateUrl(url)) {
     console.error('Invalid URL provided');
     process.exit(1);
   }
@@ -1319,97 +1368,12 @@ async function main() {
   try {
     const images = await extractAllImages(url);
     
-    // Find the highest scoring logo candidate
-    // Images are already sorted by the page.evaluate function (site name priority, then score)
-    const scoredImages = images.filter(img => img.logoScore !== undefined && img.logoScore > 0);
-    
-    // Extract site name from URL for prioritization (same logic as in page.evaluate)
-    let siteName = '';
-    try {
-      const urlObj = new URL(url);
-      const domain = urlObj.hostname.toLowerCase().replace(/^www\./, '');
-      const parts = domain.split('.');
-      if (parts.length >= 3) {
-        const commonSubdomains = ['www', 'www2', 'www3', 'invest', 'admin', 'app', 'api', 'blog', 'mail', 'ftp', 'cdn', 'static', 'assets', 'media', 'images', 'img'];
-        const mainPart = parts[parts.length - 2];
-        const subdomainPart = parts[parts.length - 3];
-        if (commonSubdomains.includes(subdomainPart.toLowerCase())) {
-          siteName = mainPart;
-        } else if (mainPart.length <= 2 || /^\d+$/.test(mainPart)) {
-          siteName = subdomainPart;
-        } else {
-          siteName = mainPart;
-        }
-      } else if (parts.length >= 2) {
-        siteName = parts[0];
-      }
-    } catch (e) {
-      // Ignore
-    }
-    
-    // Prioritize logos with site name in filename/URL
-    // Since images are already sorted, we can use the first one with site name, or highest score if none
-    const topLogo = scoredImages.length > 0 
-      ? (() => {
-          // First, try to find the first logo with site name (they're already sorted to the top)
-          if (siteName && siteName.length > 2) {
-            const siteNameLower = siteName.toLowerCase();
-            for (const img of scoredImages) {
-              const filenameLower = (img.filename || '').toLowerCase();
-              const urlLower = (img.url || '').toLowerCase();
-              if (filenameLower.includes(siteNameLower) || urlLower.includes(siteNameLower)) {
-                return img; // Return first logo with site name (already sorted to top)
-              }
-            }
-          }
-          // If no site name logos found, return highest scoring overall
-          return scoredImages.reduce((prev, current) => (prev.logoScore > current.logoScore) ? prev : current);
-        })()
-      : null;
+    // Find the top logo using shared utility
+    const siteName = getSiteName(url);
+    const topLogo = findTopLogo(images, siteName);
     
     // Prepare all images with scores for JSON output
-    // Sort images by score (highest first) for JSON output
-    const imagesWithScores = images.map(img => {
-      const imageData = {
-        filename: img.filename || 'unnamed',
-        url: img.url,
-        extension: img.extension || 'unknown',
-        source: img.source || 'unknown',
-        logoScore: img.logoScore !== undefined ? img.logoScore : 0
-      };
-      
-      // Add optional fields if they exist
-      if (img.alt) imageData.alt = img.alt;
-      if (img.className) imageData.className = img.className;
-      if (img.id) imageData.id = img.id;
-      if (img.width) imageData.width = img.width;
-      if (img.height) imageData.height = img.height;
-      if (img.position) imageData.position = img.position;
-      if (img.isInHeader) imageData.isInHeader = img.isInHeader;
-      if (img.isInNav) imageData.isInNav = img.isInNav;
-      if (img.isInHomepageLink) imageData.isInHomepageLink = img.isInHomepageLink;
-      
-      return imageData;
-    }).sort((a, b) => {
-      // Sort by score descending, then by source priority
-      if (b.logoScore !== a.logoScore) {
-        return b.logoScore - a.logoScore;
-      }
-      const sourcePriority = {
-        'inline-svg': 1,
-        'svg-sprite': 1,
-        'img-tag': 2,
-        'css-background': 3,
-        'inline-style': 4,
-        'html-source': 5,
-        'html-source-sprite': 5,
-        'data-attribute': 6,
-        'favicon': 7
-      };
-      const aPriority = sourcePriority[a.source] || 99;
-      const bPriority = sourcePriority[b.source] || 99;
-      return aPriority - bPriority;
-    });
+    const imagesWithScores = prepareImagesData(images);
     
     // Return all images with scores in JSON
     const result = {
@@ -1461,44 +1425,6 @@ if (isMainModule) {
   main();
 }
 
-/**
- * Get favicon from the page
- */
-async function getFavicon(page, url) {
-  try {
-    const faviconUrl = await page.evaluate(({ baseUrl }) => {
-      // Check for link rel="icon" or rel="shortcut icon"
-      const faviconLink = document.querySelector('link[rel="icon"], link[rel="shortcut icon"], link[rel="apple-touch-icon"]');
-      if (faviconLink) {
-        const href = faviconLink.getAttribute('href');
-        if (href) {
-          try {
-            return new URL(href, baseUrl).href;
-          } catch (e) {
-            return href.startsWith('http') ? href : `${baseUrl}${href.startsWith('/') ? '' : '/'}${href}`;
-          }
-        }
-      }
-      return null;
-    }, { baseUrl: url });
-    
-    if (faviconUrl) {
-      return faviconUrl;
-    }
-    
-    // Fallback to /favicon.ico
-    try {
-      const urlObj = new URL(url);
-      const faviconFallback = `${urlObj.protocol}//${urlObj.hostname}/favicon.ico`;
-      return faviconFallback;
-    } catch (e) {
-      return null;
-    }
-  } catch (error) {
-    console.error(`Error getting favicon: ${error.message}`);
-    return null;
-  }
-}
 
 export { extractAllImages };
 
