@@ -1,5 +1,6 @@
 node_modules/
 images.json
+result.json
 extracted_images/
 *.log
 .DS_Store
