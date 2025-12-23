@@ -38,7 +38,7 @@ async function getFaviconUrl(page, baseUrl) {
     console.log('  Could not find favicon link in HTML');
   }
 
-  // Fallback to common favicon locations - check in parallel using request API (faster, doesn't navigate page)
+  // Fallback to common favicon locations
   const baseUrlObj = new URL(baseUrl);
   const commonPaths = [
     '/favicon.ico',
@@ -46,24 +46,16 @@ async function getFaviconUrl(page, baseUrl) {
     '/apple-touch-icon.png'
   ];
 
-  // Check all paths in parallel using request API (doesn't navigate page)
-  const faviconPromises = commonPaths.map(async (path) => {
+  for (const path of commonPaths) {
     const faviconUrl = `${baseUrlObj.origin}${path}`;
     try {
-      const response = await page.request.get(faviconUrl, { timeout: 3000 });
-      if (response && response.ok()) {
+      const response = await page.goto(faviconUrl, { waitUntil: 'networkidle', timeout: 5000 });
+      if (response && response.status() === 200) {
         return faviconUrl;
       }
     } catch (e) {
       // Continue to next path
     }
-    return null;
-  });
-
-  const results = await Promise.all(faviconPromises);
-  const foundUrl = results.find(url => url !== null);
-  if (foundUrl) {
-    return foundUrl;
   }
 
   return null;
@@ -75,7 +67,11 @@ async function getFaviconUrl(page, baseUrl) {
 async function downloadImage(page, imageUrl) {
   try {
     // For ICO files, always use Playwright screenshot method for reliable conversion
-    if (imageUrl.toLowerCase().endsWith('.ico')) {
+    // Check if URL contains .ico (before query parameters)
+    const urlWithoutQuery = imageUrl.toLowerCase().split('?')[0];
+    const isIcoFile = urlWithoutQuery.endsWith('.ico') || imageUrl.toLowerCase().includes('/favicon.ico');
+    
+    if (isIcoFile) {
       // Create a simple HTML page with the image
       const html = `
         <!DOCTYPE html>
@@ -121,12 +117,47 @@ async function downloadImage(page, imageUrl) {
         }
       }
       
-      // Fallback: try loading via request API (doesn't navigate page)
+      // Fallback: try loading via data URL or fetch
       try {
-        const response = await page.request.get(imageUrl, { timeout: 10000 });
-        if (response && response.ok()) {
+        const response = await page.goto(imageUrl, { waitUntil: 'networkidle', timeout: 10000 });
+        if (response && response.status() === 200) {
           const buffer = await response.body();
-          // Try to convert with sharp as last resort
+          const contentType = response.headers()['content-type'] || '';
+          
+          // If it's actually an ICO file, try to load it in browser and screenshot
+          if (contentType.includes('x-icon') || contentType.includes('vnd.microsoft.icon') || isIcoFile) {
+            // Try loading the ICO as a data URL and screenshotting
+            const base64 = buffer.toString('base64');
+            const dataUrl = `data:image/x-icon;base64,${base64}`;
+            
+            const htmlWithDataUrl = `
+              <!DOCTYPE html>
+              <html>
+                <head>
+                  <style>
+                    body { margin: 0; padding: 0; background: white; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+                    img { display: block; max-width: 256px; max-height: 256px; }
+                  </style>
+                </head>
+                <body>
+                  <img src="${dataUrl}" alt="favicon" />
+                </body>
+              </html>
+            `;
+            
+            await page.setContent(htmlWithDataUrl, { waitUntil: 'domcontentloaded' });
+            await page.waitForTimeout(1000);
+            
+            const imgEl = await page.$('img');
+            if (imgEl) {
+              const screenshot = await imgEl.screenshot({ type: 'png' });
+              if (screenshot && screenshot.length > 0) {
+                return screenshot;
+              }
+            }
+          }
+          
+          // Try to convert with sharp as last resort (sharp doesn't support ICO natively)
           try {
             return await sharp(buffer, { failOn: 'none' }).png().toBuffer();
           } catch (e) {
@@ -138,9 +169,9 @@ async function downloadImage(page, imageUrl) {
       }
     }
     
-    // For other formats, download using request API (doesn't navigate page)
-    const response = await page.request.get(imageUrl, { timeout: 10000 });
-    if (!response || !response.ok()) {
+    // For other formats, download normally
+    const response = await page.goto(imageUrl, { waitUntil: 'networkidle', timeout: 10000 });
+    if (!response || response.status() !== 200) {
       throw new Error(`Failed to download image: ${response?.status()}`);
     }
     
@@ -288,45 +319,6 @@ function isLightColor(hex) {
 }
 
 /**
- * Internal function to extract colors from favicon using an existing page
- * @param {Page} page - Playwright page object
- * @param {string} url - Base URL
- */
-async function extractFaviconColorsWithPage(page, url) {
-  // Get favicon URL
-  console.log('Finding favicon...');
-  const faviconUrl = await getFaviconUrl(page, url);
-  
-  if (!faviconUrl) {
-    throw new Error('Could not find favicon for this website');
-  }
-
-  console.log(`Found favicon at: ${faviconUrl}`);
-
-  // Download favicon
-  console.log('Downloading favicon...');
-  const imageBuffer = await downloadFavicon(page, faviconUrl);
-
-  // Extract colors
-  console.log('Extracting colors...');
-  let colors = await extractColors(imageBuffer);
-
-  // If only one color found, use black or white as secondary
-  if (colors.primary && !colors.secondary) {
-    const isLight = isLightColor(colors.primary);
-    colors.secondary = isLight ? '#000000' : '#FFFFFF';
-    console.log(`Only one color found. Using ${colors.secondary} as secondary (${isLight ? 'light' : 'dark'} primary color)`);
-  }
-
-  // If no colors found at all, return error
-  if (!colors.primary) {
-    throw new Error('Could not extract colors from favicon');
-  }
-
-  return { ...colors, faviconUrl };
-}
-
-/**
  * Main function to extract colors from website favicon
  */
 async function extractFaviconColors(url) {
@@ -346,13 +338,43 @@ async function extractFaviconColors(url) {
     });
     const page = await context.newPage();
 
-    // Navigate to the URL - use faster wait strategy
+    // Navigate to the URL
     console.log(`Navigating to ${url}...`);
-    await page.goto(url, { waitUntil: 'load', timeout: 30000 }).catch(() => {
-      return page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 }).catch(() => {
+      return page.goto(url, { waitUntil: 'load', timeout: 30000 });
     });
 
-    return await extractFaviconColorsWithPage(page, url);
+    // Get favicon URL
+    console.log('Finding favicon...');
+    const faviconUrl = await getFaviconUrl(page, url);
+    
+    if (!faviconUrl) {
+      throw new Error('Could not find favicon for this website');
+    }
+
+    console.log(`Found favicon at: ${faviconUrl}`);
+
+    // Download favicon
+    console.log('Downloading favicon...');
+    const imageBuffer = await downloadFavicon(page, faviconUrl);
+
+    // Extract colors
+    console.log('Extracting colors...');
+    let colors = await extractColors(imageBuffer);
+
+    // If only one color found, use black or white as secondary
+    if (colors.primary && !colors.secondary) {
+      const isLight = isLightColor(colors.primary);
+      colors.secondary = isLight ? '#000000' : '#FFFFFF';
+      console.log(`Only one color found. Using ${colors.secondary} as secondary (${isLight ? 'light' : 'dark'} primary color)`);
+    }
+
+    // If no colors found at all, return error
+    if (!colors.primary) {
+      throw new Error('Could not extract colors from favicon');
+    }
+
+    return colors;
 
   } catch (error) {
     throw error;
@@ -413,7 +435,7 @@ async function extractColorsFromImageUrl(imageUrl) {
   }
 }
 
-export { extractFaviconColors, extractFaviconColorsWithPage, extractColorsFromImageUrl, getFaviconUrl };
+export { extractFaviconColors, extractColorsFromImageUrl };
 
 // Main execution
 const url = process.argv[2];
@@ -430,15 +452,14 @@ const isMainModule = import.meta.url === `file://${process.argv[1]?.replace(/\\/
 
 if (isMainModule) {
   extractFaviconColors(url)
-    .then(result => {
-      const output = {
+    .then(colors => {
+      const result = {
         url: url,
-        primary: result.primary,
-        secondary: result.secondary,
-        faviconUrl: result.faviconUrl
+        primary: colors.primary,
+        secondary: colors.secondary
       };
       console.log('\nResult:');
-      console.log(JSON.stringify(output, null, 2));
+      console.log(JSON.stringify(result, null, 2));
       process.exit(0);
     })
     .catch(error => {

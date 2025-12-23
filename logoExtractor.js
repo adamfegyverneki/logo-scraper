@@ -6,27 +6,22 @@ import { writeFileSync } from 'fs';
  */
 async function navigateWithFallback(page, url, options = {}) {
   const timeout = options.timeout || 30000;
-  const waitAfter = options.waitAfter || 1000; // Reduced from 2000 to 1000
+  const waitAfter = options.waitAfter || 2000;
   
   try {
-    // Try load first (faster than networkidle)
-    await page.goto(url, { waitUntil: 'load', timeout: timeout });
-    if (waitAfter > 0) {
-      await page.waitForTimeout(waitAfter);
-    }
+    await page.goto(url, { waitUntil: 'networkidle', timeout: timeout });
   } catch (error) {
     try {
-      console.log('  load timeout, trying domcontentloaded...');
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeout });
+      console.log('  networkidle timeout, trying load...');
+      await page.goto(url, { waitUntil: 'load', timeout: timeout });
       if (waitAfter > 0) {
         await page.waitForTimeout(waitAfter);
       }
     } catch (error2) {
-      // Last resort - just wait a bit
-      console.log('  Using domcontentloaded with extended wait...');
+      console.log('  load timeout, trying domcontentloaded...');
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeout });
       if (waitAfter > 0) {
-        await page.waitForTimeout(waitAfter);
+        await page.waitForTimeout(waitAfter * 2);
       }
     }
   }
@@ -34,10 +29,8 @@ async function navigateWithFallback(page, url, options = {}) {
 
 /**
  * Extract all image files from a website
- * @param {string} url - The URL to extract images from
- * @param {string} [faviconUrl] - Optional favicon URL to add to the images list
  */
-async function extractAllImages(url, faviconUrl = null) {
+async function extractAllImages(url) {
   let browser;
   
   try {
@@ -63,22 +56,22 @@ async function extractAllImages(url, faviconUrl = null) {
     
     // Navigate to the URL
     console.log(`Navigating to ${url}...`);
-    await navigateWithFallback(page, url, { waitAfter: 1000 });
+    await navigateWithFallback(page, url, { waitAfter: 2000 });
     
-    // Wait for dynamic content to load (reduced from 3000ms)
-    await page.waitForTimeout(1500);
+    // Wait a bit for dynamic content to load (SPAs like Nuxt.js need more time)
+    await page.waitForTimeout(3000);
     
     // Wait for SVG elements to be present (they might load dynamically)
-    // Reduced retries and wait times
+    // Try multiple times with increasing wait times for SPAs
     let svgFound = false;
-    for (let i = 0; i < 3; i++) { // Reduced from 5 to 3
+    for (let i = 0; i < 5; i++) {
       try {
-        await page.waitForSelector('svg', { timeout: 2000 }); // Reduced from 3000
+        await page.waitForSelector('svg', { timeout: 3000 });
         svgFound = true;
         break;
       } catch (e) {
-        // Wait a bit and try again (reduced from 2000ms)
-        if (i < 2) await page.waitForTimeout(1000);
+        // Wait a bit and try again
+        await page.waitForTimeout(2000);
       }
     }
     
@@ -87,54 +80,36 @@ async function extractAllImages(url, faviconUrl = null) {
       await page.evaluate(() => {
         window.scrollTo(0, document.body.scrollHeight / 2);
       });
-      await page.waitForTimeout(1000); // Reduced from 2000
+      await page.waitForTimeout(2000);
       await page.evaluate(() => {
         window.scrollTo(0, 0);
       });
-      await page.waitForTimeout(1000); // Reduced from 2000
+      await page.waitForTimeout(2000);
       
       // Try waiting for SVG again after scrolling
       if (!svgFound) {
         try {
-          await page.waitForSelector('svg', { timeout: 3000 }); // Reduced from 5000
+          await page.waitForSelector('svg', { timeout: 5000 });
           svgFound = true;
         } catch (e) {
           // Still not found
         }
       }
       
-      // Wait for network activity to settle (reduced from 3000ms)
-      await page.waitForTimeout(1500);
+      // Wait a bit for network activity to settle
+      await page.waitForTimeout(3000);
     } catch (e) {
       // Ignore scroll errors
     }
     
-    // Final wait for any remaining dynamic content (reduced from 3000ms)
-    await page.waitForTimeout(1500);
+    // Final wait for any remaining dynamic content
+    await page.waitForTimeout(3000);
     
-    return await extractAllImagesWithPage(page, url, faviconUrl);
+    // Extract all images with metadata and scoring
+    console.log('Extracting images with metadata...');
     
-  } catch (error) {
-    console.error(`Error extracting images: ${error.message}`);
-    throw error;
-  } finally {
-    if (browser) {
-      await browser.close();
-    }
-  }
-}
-
-/**
- * Internal function to extract images using an existing page
- * @param {Page} page - Playwright page object (should already be navigated to the URL)
- * @param {string} url - Base URL
- * @param {string} [faviconUrl] - Optional favicon URL to add to the images list
- */
-async function extractAllImagesWithPage(page, url, faviconUrl = null) {
-  // Extract all images with metadata and scoring
-  console.log('Extracting images with metadata...');
-  
-  const images = await page.evaluate((baseUrl) => {
+    
+    const images = await page.evaluate((baseUrl) => {
       const imageList = [];
       const seenUrls = new Set(); // To avoid duplicates
       
@@ -212,6 +187,7 @@ async function extractAllImagesWithPage(page, url, faviconUrl = null) {
       const thirdPartyServices = [
         'stripe', 'paypal', 'visa', 'mastercard', 'amex', 'discover',
         'google', 'facebook', 'twitter', 'linkedin', 'instagram', 'youtube',
+        'spotify', 'tiktok', 'whatsapp', 'strava', 'snapchat', 'pinterest',
         'microsoft', 'apple', 'amazon', 'aws', 'azure', 'github', 'gitlab',
         'slack', 'zoom', 'dropbox', 'salesforce', 'shopify', 'woocommerce',
         'wordpress', 'drupal', 'joomla', 'magento', 'prestashop'
@@ -277,7 +253,7 @@ async function extractAllImagesWithPage(page, url, faviconUrl = null) {
         
         // Only penalize if it's a third-party service that doesn't match the site name
         if (hasThirdPartyName && !matchingThirdPartyService) {
-          score -= 40; // Heavy penalty for third-party service logos (that aren't the site itself)
+          score -= 60; // Very heavy penalty for third-party service logos (that aren't the site itself)
         }
         
         // If the third-party service matches the site name, treat it as site name match
@@ -308,6 +284,30 @@ async function extractAllImagesWithPage(page, url, faviconUrl = null) {
         // Give them a very high base score since inline SVGs are almost always logos
         if (imgData.source === 'inline-svg' || imgData.source === 'svg-sprite') {
           score += 30; // Very strong indicator that it's a logo
+        }
+        
+        // Bonus for CSS background SVGs (especially in header/nav) - these are often logos
+        // Check for both SVG extension and SVG data URIs
+        const isSvgDataUri = imgData.url && imgData.url.startsWith('data:image/svg+xml');
+        if (imgData.source === 'css-background' && (imgData.extension === 'svg' || isSvgDataUri)) {
+          // SVG data URIs in CSS backgrounds should be treated similarly to inline SVGs
+          if (isSvgDataUri) {
+            score += 30; // Same high priority as inline SVGs for data URIs
+          } else {
+            score += 20; // Strong indicator for CSS background SVG files
+          }
+          // Extra bonus if in header/nav (very common for logos)
+          if (imgData.isInHeader || imgData.isInNav) {
+            score += 15; // Additional bonus for SVG logo in header/nav
+          }
+          // Extra bonus if element has "logo" in className (very strong indicator)
+          if (imgData.className && imgData.className.toLowerCase().includes('logo')) {
+            score += 25; // Very strong bonus for logo class + SVG background
+          }
+          // Extra bonus if in homepage link (logos are often clickable and link home)
+          if (imgData.isInHomepageLink) {
+            score += 15; // Additional bonus for SVG logo in homepage link
+          }
         }
         
         // Domain matching bonus - main site logos are usually on the same domain or CDN
@@ -404,23 +404,25 @@ async function extractAllImagesWithPage(page, url, faviconUrl = null) {
         // Alt attribute checks (higher weight for logo/company name)
         if (imgData.alt) {
           const altLower = imgData.alt.toLowerCase();
-          if (altLower.includes('logo')) {
-            score += 15; // Strong indicator
-          }
           
-          // Check if alt text contains site name (very strong indicator)
-          if (siteName && siteName.length > 2 && altLower.includes(siteName.toLowerCase())) {
-            score += 20; // Very strong bonus for site name in alt
-          }
-          
-          // Penalize if alt text is a third-party service name (but not if it matches site name)
-          const altIsThirdParty = thirdPartyServices.some(service => 
+          // Check if alt text contains a third-party service name (even if filename doesn't)
+          const altContainsThirdParty = thirdPartyServices.some(service => 
             (altLower === service || altLower.includes(service)) && 
             service.toLowerCase() !== siteName.toLowerCase()
           );
           
-          if (hasThirdPartyName && altIsThirdParty) {
-            score -= 15; // Penalty for third-party service in alt (that isn't the site itself)
+          // If alt contains third-party service, heavily penalize (social media icons, etc.)
+          if (altContainsThirdParty) {
+            score -= 50; // Heavy penalty for third-party service in alt text
+            // Don't give logo bonus if it's a third-party service
+          } else if (altLower.includes('logo')) {
+            score += 15; // Strong indicator
+          }
+          
+          // Check if alt text contains site name (very strong indicator)
+          // BUT only if it's NOT a third-party service (e.g., "BioTechUSA Spotify" should not get bonus)
+          if (siteName && siteName.length > 2 && altLower.includes(siteName.toLowerCase()) && !altContainsThirdParty) {
+            score += 20; // Very strong bonus for site name in alt
           }
           
           // Company name in alt is also a strong indicator (e.g., "Facebook", "Google")
@@ -514,8 +516,15 @@ async function extractAllImagesWithPage(page, url, faviconUrl = null) {
           
           // Penalize very small (icons) or very large (banners/photos)
           // BUT reduce penalty if we have strong logo indicators
-          if (imgData.width < 50 || imgData.height < 50) {
-            score -= 3;
+          // Social media icons are typically 48x48, so penalize those heavily
+          if ((imgData.width === 48 && imgData.height === 48) || 
+              (imgData.width < 50 || imgData.height < 50)) {
+            // If it's a third-party service, apply heavier penalty
+            if (hasThirdPartyName) {
+              score -= 20; // Heavy penalty for small third-party icons
+            } else {
+              score -= 10; // Penalty for small icons (increased from 3)
+            }
           }
           if (imgData.width > 800 || imgData.height > 800) {
             // Only penalize if we don't have strong logo indicators
@@ -555,6 +564,17 @@ async function extractAllImagesWithPage(page, url, faviconUrl = null) {
           if (imgData.isInHomepageLink) {
             score += 10; // SVG in homepage link is very likely the logo
           }
+        }
+        
+        // Extra bonus for CSS background SVGs in prominent positions (top-left, header, nav)
+        // These are often logos too
+        const isCssSvgDataUri = imgData.source === 'css-background' && imgData.url && imgData.url.startsWith('data:image/svg+xml');
+        if (imgData.source === 'css-background' && (imgData.extension === 'svg' || isCssSvgDataUri)) {
+          if (imgData.position && imgData.position.top !== undefined && 
+              imgData.position.top < 200 && imgData.position.left < 200) {
+            score += 8; // Bonus for CSS background SVG in top-left quadrant
+          }
+          // Note: homepage link bonus is already added above in the CSS background SVG section
         }
         
         return score;
@@ -715,16 +735,11 @@ async function extractAllImagesWithPage(page, url, faviconUrl = null) {
             const heightAttr = svg.getAttribute('height');
             const viewBox = svg.getAttribute('viewBox');
             
-            // Parse width/height attributes
-            const parsedWidth = widthAttr ? parseFloat(widthAttr) : 0;
-            const parsedHeight = heightAttr ? parseFloat(heightAttr) : 0;
-            
-            // Use attributes only if both are valid (> 0)
-            if (parsedWidth > 0 && parsedHeight > 0) {
-              svgWidth = parsedWidth;
-              svgHeight = parsedHeight;
+            if (widthAttr && heightAttr) {
+              svgWidth = parseFloat(widthAttr) || 0;
+              svgHeight = parseFloat(heightAttr) || 0;
             } else if (viewBox) {
-              // Extract from viewBox if width/height not specified or invalid
+              // Extract from viewBox if width/height not specified
               const viewBoxValues = viewBox.split(/\s+/);
               if (viewBoxValues.length >= 4) {
                 svgWidth = parseFloat(viewBoxValues[2]) || 0;
@@ -732,7 +747,7 @@ async function extractAllImagesWithPage(page, url, faviconUrl = null) {
               }
             }
             
-            // Fallback to computed dimensions if still 0
+            // Fallback to computed dimensions
             if (svgWidth === 0 || svgHeight === 0) {
               svgWidth = rect.width || 0;
               svgHeight = rect.height || 0;
@@ -862,16 +877,10 @@ async function extractAllImagesWithPage(page, url, faviconUrl = null) {
                   const heightAttr = svg.getAttribute('height');
                   const viewBox = svg.getAttribute('viewBox');
                   
-                  // Parse width/height attributes
-                  const parsedWidth = widthAttr ? parseFloat(widthAttr) : 0;
-                  const parsedHeight = heightAttr ? parseFloat(heightAttr) : 0;
-                  
-                  // Use attributes only if both are valid (> 0)
-                  if (parsedWidth > 0 && parsedHeight > 0) {
-                    svgWidth = parsedWidth;
-                    svgHeight = parsedHeight;
+                  if (widthAttr && heightAttr) {
+                    svgWidth = parseFloat(widthAttr) || 0;
+                    svgHeight = parseFloat(heightAttr) || 0;
                   } else if (viewBox) {
-                    // Extract from viewBox if width/height not specified or invalid
                     const viewBoxValues = viewBox.split(/\s+/);
                     if (viewBoxValues.length >= 4) {
                       svgWidth = parseFloat(viewBoxValues[2]) || 0;
@@ -879,7 +888,6 @@ async function extractAllImagesWithPage(page, url, faviconUrl = null) {
                     }
                   }
                   
-                  // Fallback to computed dimensions if still 0
                   if (svgWidth === 0 || svgHeight === 0) {
                     svgWidth = rect.width || 0;
                     svgHeight = rect.height || 0;
@@ -990,6 +998,21 @@ async function extractAllImagesWithPage(page, url, faviconUrl = null) {
                                  el.closest('[class*="nav"]') !== null ||
                                  el.closest('[id*="nav"]') !== null;
                   
+                  // Check if element is in homepage link
+                  const parentLink = el.closest('a');
+                  let isInHomepageLink = false;
+                  let isOnlyImageInLink = false;
+                  if (parentLink) {
+                    const linkHref = parentLink.href || '';
+                    isInHomepageLink = linkHref === window.location.origin + '/' || 
+                                      linkHref === window.location.origin ||
+                                      linkHref.endsWith('/');
+                    
+                    // Check if link only contains this element (or this element is the only visible content)
+                    const linkChildren = Array.from(parentLink.children);
+                    isOnlyImageInLink = linkChildren.length === 1 && linkChildren[0] === el;
+                  }
+                  
                   const imageData = {
                     filename: filename || 'unnamed',
                     url: normalizedUrl,
@@ -1007,6 +1030,8 @@ async function extractAllImagesWithPage(page, url, faviconUrl = null) {
                     },
                     isInHeader: isInHeader,
                     isInNav: isInNav,
+                    isInHomepageLink: isInHomepageLink,
+                    isOnlyImageInLink: isOnlyImageInLink,
                     width: rect.width || 0,
                     height: rect.height || 0
                   };
@@ -1238,13 +1263,19 @@ async function extractAllImagesWithPage(page, url, faviconUrl = null) {
       return imageList;
     }, url);
     
-    // Add favicon to results if provided and not already in list
-    if (faviconUrl) {
-      const faviconInList = images.some(img => img.url === faviconUrl);
+    // Get favicon as fallback
+    console.log('Checking for favicon...');
+    const favicon = await getFavicon(page, url);
+    
+    await browser.close();
+    
+    // Add favicon to results if found and not already in list
+    if (favicon) {
+      const faviconInList = images.some(img => img.url === favicon);
       if (!faviconInList) {
         images.push({
           filename: 'favicon.ico',
-          url: faviconUrl,
+          url: favicon,
           extension: 'ico',
           source: 'favicon',
           logoScore: 0,
@@ -1254,6 +1285,15 @@ async function extractAllImagesWithPage(page, url, faviconUrl = null) {
     }
     
     return images;
+    
+  } catch (error) {
+    console.error(`Error extracting images: ${error.message}`);
+    throw error;
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
+  }
 }
 
 /**
@@ -1421,5 +1461,46 @@ if (isMainModule) {
   main();
 }
 
-export { extractAllImages, extractAllImagesWithPage };
+/**
+ * Get favicon from the page
+ */
+async function getFavicon(page, url) {
+  try {
+    const faviconUrl = await page.evaluate(({ baseUrl }) => {
+      // Check for link rel="icon" or rel="shortcut icon"
+      const faviconLink = document.querySelector('link[rel="icon"], link[rel="shortcut icon"], link[rel="apple-touch-icon"]');
+      if (faviconLink) {
+        const href = faviconLink.getAttribute('href');
+        if (href) {
+          try {
+            return new URL(href, baseUrl).href;
+          } catch (e) {
+            return href.startsWith('http') ? href : `${baseUrl}${href.startsWith('/') ? '' : '/'}${href}`;
+          }
+        }
+      }
+      return null;
+    }, { baseUrl: url });
+    
+    if (faviconUrl) {
+      return faviconUrl;
+    }
+    
+    // Fallback to /favicon.ico
+    try {
+      const urlObj = new URL(url);
+      const faviconFallback = `${urlObj.protocol}//${urlObj.hostname}/favicon.ico`;
+      return faviconFallback;
+    } catch (e) {
+      return null;
+    }
+  } catch (error) {
+    console.error(`Error getting favicon: ${error.message}`);
+    return null;
+  }
+}
+
+export { extractAllImages };
+
+
 
