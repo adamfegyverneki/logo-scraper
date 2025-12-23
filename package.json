@@ -1,20 +1,26 @@
 {
-  "name": "image-extractor",
-  "version": "1.0.0",
-  "description": "Extract and identify company logos from websites using Playwright",
-  "main": "logoExtractor.js",
+  "name": "logo-scraper",
+  "version": "2.0.0",
+  "description": "Extract company logos and brand colors from websites using Playwright browser automation",
+  "main": "combinedExtractor.js",
   "type": "module",
   "scripts": {
     "start": "node combinedExtractor.js",
     "extract": "node combinedExtractor.js",
-    "extract-images": "node logoExtractor.js",
+    "extract-logo": "node logoExtractor.js",
     "extract-colors": "node colorExtractor.js",
-    "batch": "node batchExtractor.js"
+    "batch": "node batchExtractor.js",
+    "test": "node test.js"
   },
   "keywords": [
     "playwright",
     "scraping",
     "logo",
+    "logo-extraction",
+    "brand-colors",
+    "web-scraping",
+    "automation",
+    "favicon",
     "image-extraction"
   ],
   "author": "",
@@ -22,5 +28,8 @@
   "dependencies": {
     "playwright": "^1.57.0",
     "sharp": "^0.33.0"
+  },
+  "engines": {
+    "node": ">=14.0.0"
   }
 }

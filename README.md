@@ -1,74 +1,86 @@
-# Image Extractor
+# Logo Scraper
 
-A JavaScript script that extracts images from websites and identifies the most likely company logo using Playwright browser automation.
+A comprehensive Node.js tool for extracting company logos and brand colors from websites using Playwright browser automation. Perfect for brand research, competitor analysis, or building logo databases.
 
 ## Features
 
-- Extracts all images from a website including:
-  - `<img>` tags (including data attributes like `data-src`, `data-lazy-src`)
+### Logo Extraction
+- **Intelligent logo detection** using advanced scoring algorithms
+- Extracts logos from multiple sources:
+  - `<img>` tags (including lazy-loaded images via `data-src`, `data-lazy-src`)
   - CSS background images
   - Inline style attributes
-  - HTML source code
-  - Data attributes
-- Identifies the top logo candidate using intelligent scoring based on:
+  - SVG elements
+  - Favicon fallback
+- **Smart scoring system** that prioritizes logos based on:
   - URL/filename containing "logo", "brand", "header", "site", "company"
-  - Alt text containing "logo" or company name
-  - Class/ID containing "logo", "brand", "header", "nav", "site-identity"
+  - Site name matching in filename/URL
+  - Alt text and class/ID attributes
   - Position on page (top-left preferred)
   - Image dimensions (100-400px preferred)
   - Context (header, nav, homepage links)
-- Includes favicon as fallback
+  - File format (SVG preferred)
+
+### Color Extraction
+- Extracts primary and secondary brand colors from:
+  - Website favicons
+  - Logo images (fallback)
+- Uses Sharp for accurate color analysis
+
+### Batch Processing
+- Process multiple URLs from a text file
+- Sequential processing with progress tracking
+- Comprehensive JSON output with statistics
+- Execution time tracking per URL
+
+### Testing Suite
+- Automated test suite with color-coded output
+- URL normalization for versioned CDN URLs
+- Expected vs actual comparison on failures
+- Test statistics and success rate reporting
 
 ## Installation
 
-1. Install dependencies:
-```bash
-npm install
-```
+1. **Clone the repository:**
+git clone <repository-url>
+cd ScrapingScript2. **Install dependencies:**
+npm install3. **Install Playwright browsers:**h
+npx playwright install chromium## Usage
 
-2. Install Playwright browsers:
-```bash
-npx playwright install chromium
-```
+### Single URL Extraction (Logo + Colors)
 
-## Usage
+Extract both logo and colors from a single website:
 
-Run the script with a URL as a command-line argument:
+npm start <URL>
+# or
+npm run extract <URL>
+# or
+node combinedExtractor.js <URL>**Example:**
+npm start https://example.com**Output:**
+- Terminal: Detailed extraction results
+- `result.json`: Logo URL and colors
+- `images.json`: All extracted images with metadata (for debugging)
 
-```bash
-node logoExtractor.js https://example.com
-```
+### Logo Extraction Only
 
-Or using npm script:
-```bash
-npm run extract-images https://example.com
-```
+Extract just the logo from a website:
 
-## Output
+npm run extract-logo <URL>
+# or
+node logoExtractor.js <URL>**Example:**
+npm run extract-logo https://example.com### Color Extraction Only
 
-The script outputs:
-- **Terminal**: Top logo candidate information (filename, URL, score, metadata)
-- **JSON file** (`images.json`): Top logo candidate URL only
+Extract just brand colors from a website:
 
-Example JSON output:
-```json
-{
-  "url": "https://example.com",
-  "logo_url": "https://example.com/images/logo.png"
-}
-```
+npm run extract-colors <URL>
+# or
+node colorExtractor.js <URL>**Example:**ash
+npm run extract-colors https://example.com### Batch Processing
 
-If no logo is found:
-```json
-{
-  "url": "https://example.com",
-  "logo_url": null
-}
-```
+Process multiple URLs from a text file:
 
-## Requirements
-
-- Node.js (v14 or higher)
-- npm or yarn
-- Internet connection (for browser automation and searches)
+npm run batch <input-file.txt> [output-file.json]
+# or
+node batchExtractor.js <input-file.txt> [output-file.json]**Example:**
+npm run batch urls-example.txt batch-results.json**Input file format** (`urls-example.txt`):
 
