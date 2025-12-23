@@ -5,8 +5,8 @@
   "main": "logoExtractor.js",
   "type": "module",
   "scripts": {
-    "start": "node extractCombined.js",
-    "extract": "node extractCombined.js",
+    "start": "node combinedExtractor.js",
+    "extract": "node combinedExtractor.js",
     "extract-images": "node logoExtractor.js",
     "extract-colors": "node colorExtractor.js"
   },

@@ -110,8 +110,8 @@ async function main() {
   const url = process.argv[2];
   
   if (!url) {
-    console.error('Usage: node extractCombined.js <URL>');
-    console.error('Example: node extractCombined.js https://example.com');
+    console.error('Usage: node combinedExtractor.js <URL>');
+    console.error('Example: node combinedExtractor.js https://example.com');
     process.exit(1);
   }
   
@@ -225,7 +225,7 @@ async function main() {
 
 // Run if executed directly
 const isMainModule = import.meta.url === `file://${process.argv[1]?.replace(/\\/g, '/')}` || 
-                     process.argv[1]?.endsWith('extractCombined.js');
+                     process.argv[1]?.endsWith('combinedExtractor.js');
 
 if (isMainModule) {
   main();
