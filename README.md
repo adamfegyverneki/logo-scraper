@@ -17,7 +17,6 @@ A JavaScript script that extracts images from websites and identifies the most l
   - Position on page (top-left preferred)
   - Image dimensions (100-400px preferred)
   - Context (header, nav, homepage links)
-- Automatically saves base64 images to files
 - Includes favicon as fallback
 
 ## Installation
@@ -37,7 +36,7 @@ npx playwright install chromium
 Run the script with a URL as a command-line argument:
 
 ```bash
-node imageExtractor.js https://example.com
+node logoExtractor.js https://example.com
 ```
 
 Or using npm script:
