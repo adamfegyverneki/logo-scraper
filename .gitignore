@@ -1,6 +1,7 @@
 node_modules/
 images.json
 result.json
+batch-results.json
 extracted_images/
 *.log
 .DS_Store
