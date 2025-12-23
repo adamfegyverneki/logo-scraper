@@ -5,14 +5,14 @@ A comprehensive Node.js tool for extracting company logos and brand colors from 
 ## Features
 
 ### Logo Extraction
-- **Intelligent logo detection** using advanced scoring algorithms
+- **Logo detection** using scoring algorithms
 - Extracts logos from multiple sources:
   - `<img>` tags (including lazy-loaded images via `data-src`, `data-lazy-src`)
   - CSS background images
   - Inline style attributes
   - SVG elements
   - Favicon fallback
-- **Smart scoring system** that prioritizes logos based on:
+- **Scoring system** that prioritizes logos based on:
   - URL/filename containing "logo", "brand", "header", "site", "company"
   - Site name matching in filename/URL
   - Alt text and class/ID attributes
@@ -66,21 +66,21 @@ npm start https://example.com**Output:**
 Extract just the logo from a website:
 
 npm run extract-logo <URL>
-# or
+#
 node logoExtractor.js <URL>**Example:**
 npm run extract-logo https://example.com### Color Extraction Only
 
 Extract just brand colors from a website:
 
 npm run extract-colors <URL>
-# or
+#
 node colorExtractor.js <URL>**Example:**ash
 npm run extract-colors https://example.com### Batch Processing
 
 Process multiple URLs from a text file:
 
 npm run batch <input-file.txt> [output-file.json]
-# or
+#
 node batchExtractor.js <input-file.txt> [output-file.json]**Example:**
 npm run batch urls-example.txt batch-results.json**Input file format** (`urls-example.txt`):
 
