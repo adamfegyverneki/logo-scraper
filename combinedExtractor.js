@@ -31,29 +31,84 @@ function getSiteName(url) {
 }
 
 /**
+ * Validate if a URL is a proper image URL
+ */
+function isValidImageUrl(url) {
+  if (!url || typeof url !== 'string') {
+    return false;
+  }
+  
+  // Must start with http:// or https://
+  if (!url.startsWith('http://') && !url.startsWith('https://')) {
+    return false;
+  }
+  
+  // Check for common malformed patterns (HTML entities, JSON data, etc.)
+  const invalidPatterns = [
+    /&quot;/i,           // HTML entity quotes
+    /%7B.*%7D/i,         // URL-encoded JSON braces
+    /\[0,.*\]/i,         // JSON array notation
+    /site-meta/i,        // Common JSON metadata keys
+    /ecommerceType/i     // Common JSON metadata keys
+  ];
+  
+  for (const pattern of invalidPatterns) {
+    if (pattern.test(url)) {
+      return false;
+    }
+  }
+  
+  // Try to construct a URL object to validate format
+  try {
+    const urlObj = new URL(url);
+    // Check if it has a valid hostname and pathname
+    if (!urlObj.hostname || urlObj.hostname.length === 0) {
+      return false;
+    }
+    // Reject URLs that are just the base domain with query/fragment
+    if (urlObj.pathname === '/' && (urlObj.search || urlObj.hash)) {
+      // Check if search/hash contains JSON-like patterns
+      if (/&quot;|%7B|\[0,/.test(urlObj.search + urlObj.hash)) {
+        return false;
+      }
+    }
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+/**
  * Find the top logo from extracted images
  */
 function findTopLogo(images, siteName) {
-  const scoredImages = images.filter(img => img.logoScore !== undefined && img.logoScore > 0);
+  // Filter for valid URLs and scored images
+  const validScoredImages = images.filter(img => 
+    img.logoScore !== undefined && 
+    img.logoScore > 0 && 
+    isValidImageUrl(img.url)
+  );
   
-  if (scoredImages.length === 0) {
+  if (validScoredImages.length === 0) {
     return null;
   }
   
-  // Prioritize logos with site name in filename/URL
+  // Prioritize logos with site name in filename (not URL domain)
   if (siteName && siteName.length > 2) {
     const siteNameLower = siteName.toLowerCase();
-    for (const img of scoredImages) {
+    for (const img of validScoredImages) {
       const filenameLower = (img.filename || '').toLowerCase();
-      const urlLower = (img.url || '').toLowerCase();
-      if (filenameLower.includes(siteNameLower) || urlLower.includes(siteNameLower)) {
-        return img; // Return first logo with site name (already sorted to top)
+      // Only check filename, not the full URL (to avoid matching domain names)
+      if (filenameLower.includes(siteNameLower)) {
+        return img;
       }
     }
   }
   
   // If no site name logos found, return highest scoring overall
-  return scoredImages.reduce((prev, current) => (prev.logoScore > current.logoScore) ? prev : current);
+  return validScoredImages.reduce((prev, current) => 
+    (prev.logoScore > current.logoScore) ? prev : current
+  );
 }
 
 /**
@@ -123,12 +178,30 @@ async function main() {
     process.exit(1);
   }
   
+  const startTime = Date.now();
+  
   try {
     console.log(`\n=== Extracting logo and colors from ${url} ===\n`);
     
-    // Extract logo
-    console.log('Step 1: Extracting logo...');
-    const images = await extractAllImages(url);
+    // Extract colors first (this also gets the favicon URL)
+    console.log('Step 1: Extracting colors from favicon...');
+    let colors = null;
+    let faviconUrl = null;
+    try {
+      const colorResult = await extractFaviconColors(url);
+      colors = { primary: colorResult.primary, secondary: colorResult.secondary };
+      faviconUrl = colorResult.faviconUrl;
+      console.log(`  ✓ Primary color: ${colors.primary}`);
+      console.log(`  ✓ Secondary color: ${colors.secondary || 'N/A'}`);
+      console.log(`  ✓ Favicon URL: ${faviconUrl}`);
+    } catch (error) {
+      console.log(`  ⚠ Could not extract colors from favicon: ${error.message}`);
+      colors = { primary: null, secondary: null };
+    }
+    
+    // Extract logo (pass favicon URL if we found it)
+    console.log('\nStep 2: Extracting logo...');
+    const images = await extractAllImages(url, faviconUrl);
     const siteName = getSiteName(url);
     const topLogo = findTopLogo(images, siteName);
     const logoUrl = topLogo ? topLogo.url : null;
@@ -140,28 +213,15 @@ async function main() {
       console.log('  ⚠ No logo candidate found');
     }
     
-    // Extract colors
-    console.log('\nStep 2: Extracting colors from favicon...');
-    let colors = null;
-    try {
-      colors = await extractFaviconColors(url);
-      console.log(`  ✓ Primary color: ${colors.primary}`);
-      console.log(`  ✓ Secondary color: ${colors.secondary || 'N/A'}`);
-    } catch (error) {
-      console.log(`  ⚠ Could not extract colors from favicon: ${error.message}`);
-      
-      // Fallback: try extracting colors from the logo image
-      if (logoUrl) {
-        console.log(`  Trying to extract colors from logo image...`);
-        try {
-          colors = await extractColorsFromImageUrl(logoUrl);
-          console.log(`  ✓ Primary color (from logo): ${colors.primary}`);
-          console.log(`  ✓ Secondary color (from logo): ${colors.secondary || 'N/A'}`);
-        } catch (logoError) {
-          console.log(`  ⚠ Could not extract colors from logo: ${logoError.message}`);
-          colors = { primary: null, secondary: null };
-        }
-      } else {
+    // Fallback: try extracting colors from the logo image if we didn't get colors from favicon
+    if (!colors.primary && logoUrl) {
+      console.log('\n  Trying to extract colors from logo image...');
+      try {
+        colors = await extractColorsFromImageUrl(logoUrl);
+        console.log(`  ✓ Primary color (from logo): ${colors.primary}`);
+        console.log(`  ✓ Secondary color (from logo): ${colors.secondary || 'N/A'}`);
+      } catch (logoError) {
+        console.log(`  ⚠ Could not extract colors from logo: ${logoError.message}`);
         colors = { primary: null, secondary: null };
       }
     }
@@ -191,12 +251,20 @@ async function main() {
     writeFileSync('images.json', JSON.stringify(debugResult, null, 2));
     console.log(`✓ Debug data saved to images.json (${images.length} images)`);
     
+    // Calculate execution time
+    const endTime = Date.now();
+    const executionTime = ((endTime - startTime) / 1000).toFixed(2);
+    
     // Output summary
     console.log('\n=== Summary ===');
     console.log(JSON.stringify(result, null, 2));
+    console.log(`\n⏱️  Execution time: ${executionTime} seconds`);
     
   } catch (error) {
+    const endTime = Date.now();
+    const executionTime = ((endTime - startTime) / 1000).toFixed(2);
     console.error(`\n✗ Failed to extract data: ${error.message}`);
+    console.error(`⏱️  Execution time: ${executionTime} seconds`);
     
     // Save error result
     const errorResult = {

@@ -335,7 +335,7 @@ async function extractFaviconColors(url) {
       throw new Error('Could not extract colors from favicon');
     }
 
-    return colors;
+    return { ...colors, faviconUrl };
 
   } catch (error) {
     throw error;
@@ -396,7 +396,7 @@ async function extractColorsFromImageUrl(imageUrl) {
   }
 }
 
-export { extractFaviconColors, extractColorsFromImageUrl };
+export { extractFaviconColors, extractColorsFromImageUrl, getFaviconUrl };
 
 // Main execution
 const url = process.argv[2];
@@ -413,14 +413,15 @@ const isMainModule = import.meta.url === `file://${process.argv[1]?.replace(/\\/
 
 if (isMainModule) {
   extractFaviconColors(url)
-    .then(colors => {
-      const result = {
+    .then(result => {
+      const output = {
         url: url,
-        primary: colors.primary,
-        secondary: colors.secondary
+        primary: result.primary,
+        secondary: result.secondary,
+        faviconUrl: result.faviconUrl
       };
       console.log('\nResult:');
-      console.log(JSON.stringify(result, null, 2));
+      console.log(JSON.stringify(output, null, 2));
       process.exit(0);
     })
     .catch(error => {

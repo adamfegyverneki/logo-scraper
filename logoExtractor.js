@@ -29,8 +29,10 @@ async function navigateWithFallback(page, url, options = {}) {
 
 /**
  * Extract all image files from a website
+ * @param {string} url - The URL to extract images from
+ * @param {string} [faviconUrl] - Optional favicon URL to add to the images list
  */
-async function extractAllImages(url) {
+async function extractAllImages(url, faviconUrl = null) {
   let browser;
   
   try {
@@ -1201,19 +1203,15 @@ async function extractAllImages(url) {
       return imageList;
     }, url);
     
-    // Get favicon as fallback
-    console.log('Checking for favicon...');
-    const favicon = await getFavicon(page, url);
-    
     await browser.close();
     
-    // Add favicon to results if found and not already in list
-    if (favicon) {
-      const faviconInList = images.some(img => img.url === favicon);
+    // Add favicon to results if provided and not already in list
+    if (faviconUrl) {
+      const faviconInList = images.some(img => img.url === faviconUrl);
       if (!faviconInList) {
         images.push({
           filename: 'favicon.ico',
-          url: favicon,
+          url: faviconUrl,
           extension: 'ico',
           source: 'favicon',
           logoScore: 0,
@@ -1397,45 +1395,6 @@ const isMainModule = import.meta.url === `file://${process.argv[1]?.replace(/\\/
 
 if (isMainModule) {
   main();
-}
-
-/**
- * Get favicon from the page
- */
-async function getFavicon(page, url) {
-  try {
-    const faviconUrl = await page.evaluate(({ baseUrl }) => {
-      // Check for link rel="icon" or rel="shortcut icon"
-      const faviconLink = document.querySelector('link[rel="icon"], link[rel="shortcut icon"], link[rel="apple-touch-icon"]');
-      if (faviconLink) {
-        const href = faviconLink.getAttribute('href');
-        if (href) {
-          try {
-            return new URL(href, baseUrl).href;
-          } catch (e) {
-            return href.startsWith('http') ? href : `${baseUrl}${href.startsWith('/') ? '' : '/'}${href}`;
-          }
-        }
-      }
-      return null;
-    }, { baseUrl: url });
-    
-    if (faviconUrl) {
-      return faviconUrl;
-    }
-    
-    // Fallback to /favicon.ico
-    try {
-      const urlObj = new URL(url);
-      const faviconFallback = `${urlObj.protocol}//${urlObj.hostname}/favicon.ico`;
-      return faviconFallback;
-    } catch (e) {
-      return null;
-    }
-  } catch (error) {
-    console.error(`Error getting favicon: ${error.message}`);
-    return null;
-  }
 }
 
 export { extractAllImages };
