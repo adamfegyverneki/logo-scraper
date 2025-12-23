@@ -8,7 +8,8 @@
     "start": "node combinedExtractor.js",
     "extract": "node combinedExtractor.js",
     "extract-images": "node logoExtractor.js",
-    "extract-colors": "node colorExtractor.js"
+    "extract-colors": "node colorExtractor.js",
+    "batch": "node batchExtractor.js"
   },
   "keywords": [
     "playwright",
