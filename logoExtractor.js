@@ -6,22 +6,27 @@ import { writeFileSync } from 'fs';
  */
 async function navigateWithFallback(page, url, options = {}) {
   const timeout = options.timeout || 30000;
-  const waitAfter = options.waitAfter || 2000;
+  const waitAfter = options.waitAfter || 1000; // Reduced from 2000 to 1000
   
   try {
-    await page.goto(url, { waitUntil: 'networkidle', timeout: timeout });
+    // Try load first (faster than networkidle)
+    await page.goto(url, { waitUntil: 'load', timeout: timeout });
+    if (waitAfter > 0) {
+      await page.waitForTimeout(waitAfter);
+    }
   } catch (error) {
     try {
-      console.log('  networkidle timeout, trying load...');
-      await page.goto(url, { waitUntil: 'load', timeout: timeout });
+      console.log('  load timeout, trying domcontentloaded...');
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeout });
       if (waitAfter > 0) {
         await page.waitForTimeout(waitAfter);
       }
     } catch (error2) {
-      console.log('  load timeout, trying domcontentloaded...');
+      // Last resort - just wait a bit
+      console.log('  Using domcontentloaded with extended wait...');
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeout });
       if (waitAfter > 0) {
-        await page.waitForTimeout(waitAfter * 2);
+        await page.waitForTimeout(waitAfter);
       }
     }
   }
@@ -58,22 +63,22 @@ async function extractAllImages(url, faviconUrl = null) {
     
     // Navigate to the URL
     console.log(`Navigating to ${url}...`);
-    await navigateWithFallback(page, url, { waitAfter: 2000 });
+    await navigateWithFallback(page, url, { waitAfter: 1000 });
     
-    // Wait a bit for dynamic content to load (SPAs like Nuxt.js need more time)
-    await page.waitForTimeout(3000);
+    // Wait for dynamic content to load (reduced from 3000ms)
+    await page.waitForTimeout(1500);
     
     // Wait for SVG elements to be present (they might load dynamically)
-    // Try multiple times with increasing wait times for SPAs
+    // Reduced retries and wait times
     let svgFound = false;
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 3; i++) { // Reduced from 5 to 3
       try {
-        await page.waitForSelector('svg', { timeout: 3000 });
+        await page.waitForSelector('svg', { timeout: 2000 }); // Reduced from 3000
         svgFound = true;
         break;
       } catch (e) {
-        // Wait a bit and try again
-        await page.waitForTimeout(2000);
+        // Wait a bit and try again (reduced from 2000ms)
+        if (i < 2) await page.waitForTimeout(1000);
       }
     }
     
@@ -82,36 +87,54 @@ async function extractAllImages(url, faviconUrl = null) {
       await page.evaluate(() => {
         window.scrollTo(0, document.body.scrollHeight / 2);
       });
-      await page.waitForTimeout(2000);
+      await page.waitForTimeout(1000); // Reduced from 2000
       await page.evaluate(() => {
         window.scrollTo(0, 0);
       });
-      await page.waitForTimeout(2000);
+      await page.waitForTimeout(1000); // Reduced from 2000
       
       // Try waiting for SVG again after scrolling
       if (!svgFound) {
         try {
-          await page.waitForSelector('svg', { timeout: 5000 });
+          await page.waitForSelector('svg', { timeout: 3000 }); // Reduced from 5000
           svgFound = true;
         } catch (e) {
           // Still not found
         }
       }
       
-      // Wait a bit for network activity to settle
-      await page.waitForTimeout(3000);
+      // Wait for network activity to settle (reduced from 3000ms)
+      await page.waitForTimeout(1500);
     } catch (e) {
       // Ignore scroll errors
     }
     
-    // Final wait for any remaining dynamic content
-    await page.waitForTimeout(3000);
+    // Final wait for any remaining dynamic content (reduced from 3000ms)
+    await page.waitForTimeout(1500);
     
-    // Extract all images with metadata and scoring
-    console.log('Extracting images with metadata...');
+    return await extractAllImagesWithPage(page, url, faviconUrl);
     
-    
-    const images = await page.evaluate((baseUrl) => {
+  } catch (error) {
+    console.error(`Error extracting images: ${error.message}`);
+    throw error;
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
+  }
+}
+
+/**
+ * Internal function to extract images using an existing page
+ * @param {Page} page - Playwright page object (should already be navigated to the URL)
+ * @param {string} url - Base URL
+ * @param {string} [faviconUrl] - Optional favicon URL to add to the images list
+ */
+async function extractAllImagesWithPage(page, url, faviconUrl = null) {
+  // Extract all images with metadata and scoring
+  console.log('Extracting images with metadata...');
+  
+  const images = await page.evaluate((baseUrl) => {
       const imageList = [];
       const seenUrls = new Set(); // To avoid duplicates
       
@@ -692,11 +715,16 @@ async function extractAllImages(url, faviconUrl = null) {
             const heightAttr = svg.getAttribute('height');
             const viewBox = svg.getAttribute('viewBox');
             
-            if (widthAttr && heightAttr) {
-              svgWidth = parseFloat(widthAttr) || 0;
-              svgHeight = parseFloat(heightAttr) || 0;
+            // Parse width/height attributes
+            const parsedWidth = widthAttr ? parseFloat(widthAttr) : 0;
+            const parsedHeight = heightAttr ? parseFloat(heightAttr) : 0;
+            
+            // Use attributes only if both are valid (> 0)
+            if (parsedWidth > 0 && parsedHeight > 0) {
+              svgWidth = parsedWidth;
+              svgHeight = parsedHeight;
             } else if (viewBox) {
-              // Extract from viewBox if width/height not specified
+              // Extract from viewBox if width/height not specified or invalid
               const viewBoxValues = viewBox.split(/\s+/);
               if (viewBoxValues.length >= 4) {
                 svgWidth = parseFloat(viewBoxValues[2]) || 0;
@@ -704,7 +732,7 @@ async function extractAllImages(url, faviconUrl = null) {
               }
             }
             
-            // Fallback to computed dimensions
+            // Fallback to computed dimensions if still 0
             if (svgWidth === 0 || svgHeight === 0) {
               svgWidth = rect.width || 0;
               svgHeight = rect.height || 0;
@@ -834,10 +862,16 @@ async function extractAllImages(url, faviconUrl = null) {
                   const heightAttr = svg.getAttribute('height');
                   const viewBox = svg.getAttribute('viewBox');
                   
-                  if (widthAttr && heightAttr) {
-                    svgWidth = parseFloat(widthAttr) || 0;
-                    svgHeight = parseFloat(heightAttr) || 0;
+                  // Parse width/height attributes
+                  const parsedWidth = widthAttr ? parseFloat(widthAttr) : 0;
+                  const parsedHeight = heightAttr ? parseFloat(heightAttr) : 0;
+                  
+                  // Use attributes only if both are valid (> 0)
+                  if (parsedWidth > 0 && parsedHeight > 0) {
+                    svgWidth = parsedWidth;
+                    svgHeight = parsedHeight;
                   } else if (viewBox) {
+                    // Extract from viewBox if width/height not specified or invalid
                     const viewBoxValues = viewBox.split(/\s+/);
                     if (viewBoxValues.length >= 4) {
                       svgWidth = parseFloat(viewBoxValues[2]) || 0;
@@ -845,6 +879,7 @@ async function extractAllImages(url, faviconUrl = null) {
                     }
                   }
                   
+                  // Fallback to computed dimensions if still 0
                   if (svgWidth === 0 || svgHeight === 0) {
                     svgWidth = rect.width || 0;
                     svgHeight = rect.height || 0;
@@ -1203,8 +1238,6 @@ async function extractAllImages(url, faviconUrl = null) {
       return imageList;
     }, url);
     
-    await browser.close();
-    
     // Add favicon to results if provided and not already in list
     if (faviconUrl) {
       const faviconInList = images.some(img => img.url === faviconUrl);
@@ -1221,15 +1254,6 @@ async function extractAllImages(url, faviconUrl = null) {
     }
     
     return images;
-    
-  } catch (error) {
-    console.error(`Error extracting images: ${error.message}`);
-    throw error;
-  } finally {
-    if (browser) {
-      await browser.close();
-    }
-  }
 }
 
 /**
@@ -1397,5 +1421,5 @@ if (isMainModule) {
   main();
 }
 
-export { extractAllImages };
+export { extractAllImages, extractAllImagesWithPage };
 

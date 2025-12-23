@@ -38,7 +38,7 @@ async function getFaviconUrl(page, baseUrl) {
     console.log('  Could not find favicon link in HTML');
   }
 
-  // Fallback to common favicon locations
+  // Fallback to common favicon locations - check in parallel using request API (faster, doesn't navigate page)
   const baseUrlObj = new URL(baseUrl);
   const commonPaths = [
     '/favicon.ico',
@@ -46,16 +46,24 @@ async function getFaviconUrl(page, baseUrl) {
     '/apple-touch-icon.png'
   ];
 
-  for (const path of commonPaths) {
+  // Check all paths in parallel using request API (doesn't navigate page)
+  const faviconPromises = commonPaths.map(async (path) => {
     const faviconUrl = `${baseUrlObj.origin}${path}`;
     try {
-      const response = await page.goto(faviconUrl, { waitUntil: 'networkidle', timeout: 5000 });
-      if (response && response.status() === 200) {
+      const response = await page.request.get(faviconUrl, { timeout: 3000 });
+      if (response && response.ok()) {
         return faviconUrl;
       }
     } catch (e) {
       // Continue to next path
     }
+    return null;
+  });
+
+  const results = await Promise.all(faviconPromises);
+  const foundUrl = results.find(url => url !== null);
+  if (foundUrl) {
+    return foundUrl;
   }
 
   return null;
@@ -113,10 +121,10 @@ async function downloadImage(page, imageUrl) {
         }
       }
       
-      // Fallback: try loading via data URL
+      // Fallback: try loading via request API (doesn't navigate page)
       try {
-        const response = await page.goto(imageUrl, { waitUntil: 'networkidle', timeout: 10000 });
-        if (response && response.status() === 200) {
+        const response = await page.request.get(imageUrl, { timeout: 10000 });
+        if (response && response.ok()) {
           const buffer = await response.body();
           // Try to convert with sharp as last resort
           try {
@@ -130,9 +138,9 @@ async function downloadImage(page, imageUrl) {
       }
     }
     
-    // For other formats, download normally
-    const response = await page.goto(imageUrl, { waitUntil: 'networkidle', timeout: 10000 });
-    if (!response || response.status() !== 200) {
+    // For other formats, download using request API (doesn't navigate page)
+    const response = await page.request.get(imageUrl, { timeout: 10000 });
+    if (!response || !response.ok()) {
       throw new Error(`Failed to download image: ${response?.status()}`);
     }
     
@@ -280,6 +288,45 @@ function isLightColor(hex) {
 }
 
 /**
+ * Internal function to extract colors from favicon using an existing page
+ * @param {Page} page - Playwright page object
+ * @param {string} url - Base URL
+ */
+async function extractFaviconColorsWithPage(page, url) {
+  // Get favicon URL
+  console.log('Finding favicon...');
+  const faviconUrl = await getFaviconUrl(page, url);
+  
+  if (!faviconUrl) {
+    throw new Error('Could not find favicon for this website');
+  }
+
+  console.log(`Found favicon at: ${faviconUrl}`);
+
+  // Download favicon
+  console.log('Downloading favicon...');
+  const imageBuffer = await downloadFavicon(page, faviconUrl);
+
+  // Extract colors
+  console.log('Extracting colors...');
+  let colors = await extractColors(imageBuffer);
+
+  // If only one color found, use black or white as secondary
+  if (colors.primary && !colors.secondary) {
+    const isLight = isLightColor(colors.primary);
+    colors.secondary = isLight ? '#000000' : '#FFFFFF';
+    console.log(`Only one color found. Using ${colors.secondary} as secondary (${isLight ? 'light' : 'dark'} primary color)`);
+  }
+
+  // If no colors found at all, return error
+  if (!colors.primary) {
+    throw new Error('Could not extract colors from favicon');
+  }
+
+  return { ...colors, faviconUrl };
+}
+
+/**
  * Main function to extract colors from website favicon
  */
 async function extractFaviconColors(url) {
@@ -299,43 +346,13 @@ async function extractFaviconColors(url) {
     });
     const page = await context.newPage();
 
-    // Navigate to the URL
+    // Navigate to the URL - use faster wait strategy
     console.log(`Navigating to ${url}...`);
-    await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 }).catch(() => {
-      return page.goto(url, { waitUntil: 'load', timeout: 30000 });
+    await page.goto(url, { waitUntil: 'load', timeout: 30000 }).catch(() => {
+      return page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
     });
 
-    // Get favicon URL
-    console.log('Finding favicon...');
-    const faviconUrl = await getFaviconUrl(page, url);
-    
-    if (!faviconUrl) {
-      throw new Error('Could not find favicon for this website');
-    }
-
-    console.log(`Found favicon at: ${faviconUrl}`);
-
-    // Download favicon
-    console.log('Downloading favicon...');
-    const imageBuffer = await downloadFavicon(page, faviconUrl);
-
-    // Extract colors
-    console.log('Extracting colors...');
-    let colors = await extractColors(imageBuffer);
-
-    // If only one color found, use black or white as secondary
-    if (colors.primary && !colors.secondary) {
-      const isLight = isLightColor(colors.primary);
-      colors.secondary = isLight ? '#000000' : '#FFFFFF';
-      console.log(`Only one color found. Using ${colors.secondary} as secondary (${isLight ? 'light' : 'dark'} primary color)`);
-    }
-
-    // If no colors found at all, return error
-    if (!colors.primary) {
-      throw new Error('Could not extract colors from favicon');
-    }
-
-    return { ...colors, faviconUrl };
+    return await extractFaviconColorsWithPage(page, url);
 
   } catch (error) {
     throw error;
@@ -396,7 +413,7 @@ async function extractColorsFromImageUrl(imageUrl) {
   }
 }
 
-export { extractFaviconColors, extractColorsFromImageUrl, getFaviconUrl };
+export { extractFaviconColors, extractFaviconColorsWithPage, extractColorsFromImageUrl, getFaviconUrl };
 
 // Main execution
 const url = process.argv[2];
